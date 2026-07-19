@@ -1,0 +1,10 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.dir-ai/voyager-hands",
+  "description": "Voyager's hands: propose + preview a consent-gated, reversible remediation. Never mutates via MCP.",
+  "version": "0.1.0",
+  "packages": [
+    { "registryType": "npm", "identifier": "@dir-ai/voyager-hands", "version": "0.1.0", "transport": { "type": "stdio" }, "packageArguments": [ { "type": "positional", "valueHint": "subcommand", "value": "mcp" } ] }
+  ],
+  "repository": { "url": "https://github.com/dir-ai/voyager-hands", "source": "github" }
+}

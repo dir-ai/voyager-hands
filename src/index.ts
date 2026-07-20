@@ -11,7 +11,7 @@ export { buildAction, CATALOG, entryFor } from './catalog.js'
 export { preview, apply, type ApplyOptions } from './apply.js'
 export { blastToTier, consentGate, requiresHuman, actionDigestOf } from './consent.js'
 export { attest } from './attest.js'
-export { MemoryDnsProvider } from './providers.js'
+export { MemoryDnsProvider, FileProvider } from './providers.js'
 export type {
   Action, CatalogEntry, BlastClass, ConsentTier, ActionStatus,
   Preview, Consent, Attestation, ApplyResult, Provider,

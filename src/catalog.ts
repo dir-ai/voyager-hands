@@ -32,6 +32,24 @@ export const CATALOG: CatalogEntry[] = [
     // Inverse is add-back — only reversible if we captured the value being removed.
     invert: (a) => (a.params.value ? { kind: 'dns.record.add', params: { type: a.params.type, name: a.params.name, value: a.params.value } } : null),
   },
+  {
+    // EDIT-ON-THE-FLY: a declarative, reversible code edit — replace an EXACT string
+    // in a file with another. No free-form shell, no patch that could apply anywhere:
+    // the exact `find` text and its exact inverse (replace `to` back to `find`). The
+    // target is the file path (containment enforced by the FileProvider).
+    kind: 'file.replace',
+    blastClass: 'B1', // a code change is reversible but affects behaviour → human tier
+    remediates: [],
+    describe: (p, target) => `in ${target}: replace ${truncate(JSON.stringify(p.find), 48)} → ${truncate(JSON.stringify(p.to), 48)}`,
+    validate: (p) => {
+      if (!p.find) return 'find (the exact text to replace) is required'
+      if (p.to == null) return 'to (the replacement text) is required'
+      if (p.find.length > 8192 || (p.to?.length ?? 0) > 8192) return 'find/to too long (>8KB) — use a smaller, precise edit'
+      if (p.find === p.to) return 'find and to are identical — no-op'
+      return null
+    },
+    invert: (a) => ({ kind: 'file.replace', params: { find: a.params.to, to: a.params.find } }),
+  },
 ]
 
 export function entryFor(kind: string): CatalogEntry | undefined {

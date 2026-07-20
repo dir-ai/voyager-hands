@@ -122,3 +122,49 @@ test('preview: an irreversible action (delete with no captured value) is BLOCKED
   const r = await apply(del, { provider: new MemoryDnsProvider(), execute: true, consent: { approved: true, by: 'p' }, now: NOW })
   assert.equal(r.status, 'withheld') // refused outright, never applied
 })
+
+// EDIT-ON-THE-FLY: a declarative, reversible code edit through the gated pipeline.
+test('file.replace: consent-gated edit applies + verifies; a failing verify auto-rolls-back', async () => {
+  const { mkdtemp, writeFile, readFile } = await import('node:fs/promises')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  const { FileProvider } = await import('../dist/index.js')
+  const dir = await mkdtemp(join(tmpdir(), 'hands-edit-'))
+  const file = join(dir, 'server.js')
+  await writeFile(file, 'const PORT = 3000;\napp.listen(PORT);\n')
+  const provider = new FileProvider(dir)
+  const action = buildAction('file.replace', file, { find: 'const PORT = 3000;', to: 'const PORT = process.env.PORT || 3000;' })
+  assert.equal(action.blastClass, 'B1')
+  assert.equal(action.reversible, true)
+  assert.equal(action.inverse?.params.find, 'const PORT = process.env.PORT || 3000;') // exact inverse
+
+  // Dry-run first: nothing changes.
+  const dry = await apply(action, { provider, now: NOW })
+  assert.equal(dry.status, 'previewed')
+  assert.match(await readFile(file, 'utf8'), /const PORT = 3000;/)
+
+  // Apply with consent + a passing verify → the edit lands.
+  const done = await apply(action, { provider, execute: true, consent: { approved: true, by: 'policy:edit' }, verify: async () => true, now: NOW })
+  assert.equal(done.status, 'applied')
+  assert.equal(done.mutated, true)
+  assert.match(await readFile(file, 'utf8'), /process\.env\.PORT/)
+
+  // A failing verify on the same edit → auto-rollback restores the prior content.
+  await writeFile(file, 'const PORT = 3000;\napp.listen(PORT);\n')
+  const rolled = await apply(action, { provider, execute: true, consent: { approved: true, by: 'policy:edit' }, verify: async () => false, now: NOW })
+  assert.equal(rolled.status, 'rolled-back')
+  assert.equal(rolled.rolledBack, true)
+  assert.match(await readFile(file, 'utf8'), /const PORT = 3000;/) // restored, no process.env
+})
+
+test('FileProvider: refuses a path outside its root (containment)', async () => {
+  const { mkdtemp } = await import('node:fs/promises')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  const { FileProvider } = await import('../dist/index.js')
+  const dir = await mkdtemp(join(tmpdir(), 'hands-scope-'))
+  const provider = new FileProvider(dir)
+  const escape = buildAction('file.replace', join(dir, '..', '..', 'etc-passwd'), { find: 'a', to: 'b' })
+  const r = await apply(escape, { provider, execute: true, consent: { approved: true, by: 'policy:edit' }, verify: async () => true, now: NOW })
+  assert.notEqual(r.status, 'applied') // containment refused it
+})

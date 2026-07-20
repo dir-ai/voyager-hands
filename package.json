@@ -1,6 +1,6 @@
 {
   "name": "@dir-ai/voyager-hands",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Voyager's HANDS: the consent-gated remediation organ. Turns a verified finding into a declarative, reversible action from a known-safe catalog; previews it with a blast-radius; applies ONLY behind a hard consent gate through an injected provider; verifies and auto-rolls-back; and attests. Never free-form, never autonomous on production.",
   "type": "module",
   "license": "MIT",

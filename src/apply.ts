@@ -1,6 +1,6 @@
 import { attest } from './attest.js'
 import { blastToTier, consentGate, requiresHuman } from './consent.js'
-import type { Action, ApplyResult, Consent, Preview, Provider } from './types.js'
+import type { Action, ActionStatus, ApplyResult, Consent, Preview, Provider } from './types.js'
 
 export interface ApplyOptions {
   /** The injected, least-privilege provider. WITHOUT it, nothing can mutate. */
@@ -59,6 +59,7 @@ export async function apply(action: Action, opts: ApplyOptions = {}): Promise<Ap
       action,
       attestation: attest(action, 'previewed', before, null, null, now),
       rolledBack: false,
+      mutated: false,
       verification: null,
       notes: [`DRY-RUN (execute!=true). ${prev.diff}`, `consent required: ${prev.consentTier}${prev.requiresHuman ? ' (human)' : ''}`],
     }
@@ -68,64 +69,83 @@ export async function apply(action: Action, opts: ApplyOptions = {}): Promise<Ap
   if (!opts.provider) {
     return withheld(action, now, ['no provider injected — the hands hold no credentials and cannot mutate on their own'], opts.consent?.by ?? null)
   }
-  const gate = consentGate(prev.consentTier, opts.consent)
+  const gate = consentGate(prev.consentTier, opts.consent, action, now)
   if (gate) {
     return withheld(action, now, [gate, `blast ${action.blastClass} → ${prev.consentTier}`], opts.consent?.by ?? null)
   }
 
-  const before = await safeRead(opts.provider, action.target)
+  const provider = opts.provider
+  const before = await safeRead(provider, action.target)
   log(`applying: ${action.summary}`)
+  let applyError: string | null = null
   try {
-    await opts.provider.apply(action)
+    await provider.apply(action)
   } catch (e) {
-    return {
-      status: 'failed',
-      action,
-      attestation: attest(action, 'failed', before, before, opts.consent!.by, now),
-      rolledBack: false,
-      verification: null,
-      notes: [`apply threw — no change committed`],
-      error: e instanceof Error ? e.message : String(e),
-    }
+    applyError = e instanceof Error ? e.message : String(e)
   }
-  const after = await safeRead(opts.provider, action.target)
 
-  // Verify (re-sense). Auto-rollback if it regressed.
-  const passed = opts.verify ? await safeVerify(opts.verify, action, opts.provider) : after !== before ? true : null
+  // MANDATORY read-back — on BOTH paths. A provider can mutate and THEN throw; we
+  // must observe the real state, never assume "threw ⇒ nothing changed".
+  const afterAttempt = await safeRead(provider, action.target)
+  const mutated = afterAttempt !== before
+
+  if (applyError) {
+    // The apply reported failure. If nothing actually changed, it's a clean failure.
+    if (!mutated) {
+      return result('failed', action, before, before, opts.consent!.by, now, false, false, null, [`apply failed and the target is unchanged (verified by read-back)`], applyError)
+    }
+    // It threw AFTER a partial mutation — the dangerous case Codex flagged. Try to
+    // roll back to `before` and CONFIRM the restore by reading again.
+    log('apply threw AFTER mutating the target → attempting rollback')
+    const { rolledBack, restored } = await rollback(provider, action, before)
+    return rolledBack
+      ? result('rolled-back', action, before, restored, opts.consent!.by, now, true, false, { passed: false, method: 'read-back after partial mutation' }, ['apply threw after a PARTIAL mutation; rolled back and CONFIRMED the prior state was restored'], applyError)
+      : result('failed', action, before, afterAttempt, opts.consent!.by, now, true, false, { passed: false, method: 'read-back after partial mutation' }, ['apply threw after a PARTIAL mutation and rollback did NOT restore the prior state — the target is in an INCONSISTENT state, manual intervention required'], applyError)
+  }
+
+  const after = afterAttempt
+  // Verify (re-sense). Without a caller-supplied semantic verify, a mere
+  // before≠after change is NOT proof the fix worked — report it unverified, never
+  // as success. Auto-rollback only on a real verification FAILURE.
+  const passed = opts.verify ? await safeVerify(opts.verify, action, provider) : null
+  const method = opts.verify ? 'caller re-sense' : 'none — applied but NOT semantically verified'
   if (passed === false) {
     log('verification failed → auto-rolling back')
-    let rolledBack = false
-    if (action.inverse) {
-      try {
-        await opts.provider.apply({ ...action.inverse, inverse: undefined } as Action)
-        rolledBack = true
-      } catch {
-        rolledBack = false
-      }
-    }
-    const rolledState = await safeRead(opts.provider, action.target)
-    return {
-      status: rolledBack ? 'rolled-back' : 'failed',
-      action,
-      attestation: attest(action, rolledBack ? 'rolled-back' : 'failed', before, rolledState, opts.consent!.by, now),
-      rolledBack,
-      verification: { passed: false, method: opts.verify ? 'caller re-sense' : 'state-change check' },
-      notes: rolledBack ? ['verification failed; auto-rolled back to the prior state'] : ['verification failed AND rollback failed — manual intervention required'],
-    }
+    const { rolledBack, restored } = await rollback(provider, action, before)
+    return result(
+      rolledBack ? 'rolled-back' : 'failed', action, before, restored, opts.consent!.by, now, !rolledBack, rolledBack,
+      { passed: false, method },
+      rolledBack ? ['verification failed; auto-rolled back and confirmed the prior state was restored'] : ['verification failed AND rollback did not restore the prior state — manual intervention required'],
+    )
   }
 
-  return {
-    status: 'applied',
-    action,
-    attestation: attest(action, 'applied', before, after, opts.consent!.by, now),
-    rolledBack: false,
-    verification: { passed, method: opts.verify ? 'caller re-sense' : 'state-change check' },
-    notes: [`applied by ${opts.consent!.by}${opts.consent!.secondBy ? ` + ${opts.consent!.secondBy}` : ''}`],
+  const notes = [`applied by ${opts.consent!.by}${opts.consent!.secondBy ? ` + ${opts.consent!.secondBy}` : ''}`]
+  if (passed === null) notes.push('NOT verified — supply a `verify` re-sense to confirm the fix actually took effect; a state change alone is not proof')
+  return result('applied', action, before, after, opts.consent!.by, now, mutated, false, { passed, method }, notes)
+}
+
+/** Roll back via the exact inverse, then CONFIRM by reading the state again — a
+ *  rollback is only "done" if the target actually returned to `before`. */
+async function rollback(provider: Provider, action: Action, before: string | null): Promise<{ rolledBack: boolean; restored: string | null }> {
+  if (!action.inverse) return { rolledBack: false, restored: await safeRead(provider, action.target) }
+  try {
+    await provider.apply({ ...action.inverse, inverse: undefined } as Action)
+  } catch {
+    /* fall through to the confirming read */
   }
+  const restored = await safeRead(provider, action.target)
+  return { rolledBack: restored === before, restored }
+}
+
+function result(
+  status: ActionStatus, action: Action, before: string | null, after: string | null, by: string | null, now: number,
+  mutated: boolean, rolledBack: boolean, verification: ApplyResult['verification'], notes: string[], error?: string,
+): ApplyResult {
+  return { status, action, attestation: attest(action, status, before, after, by, now), rolledBack, mutated, verification, notes, error }
 }
 
 function withheld(action: Action, now: number, notes: string[], by: string | null): ApplyResult {
-  return { status: 'withheld', action, attestation: attest(action, 'withheld', null, null, by, now), rolledBack: false, verification: null, notes }
+  return { status: 'withheld', action, attestation: attest(action, 'withheld', null, null, by, now), rolledBack: false, mutated: false, verification: null, notes }
 }
 async function safeRead(p: Provider, target: string): Promise<string | null> {
   try {

@@ -9,7 +9,7 @@
 export { plan, type Finding, type Proposal } from './plan.js'
 export { buildAction, CATALOG, entryFor } from './catalog.js'
 export { preview, apply, type ApplyOptions } from './apply.js'
-export { blastToTier, consentGate, requiresHuman } from './consent.js'
+export { blastToTier, consentGate, requiresHuman, actionDigestOf } from './consent.js'
 export { attest } from './attest.js'
 export { MemoryDnsProvider } from './providers.js'
 export type {

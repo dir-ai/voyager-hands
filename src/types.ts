@@ -75,6 +75,13 @@ export interface Consent {
   by: string
   /** For B3/two-person: the second approver. */
   secondBy?: string
+  /** Binds this approval to ONE specific action (see actionDigestOf). Required for
+   *  human/two-person tiers; if present on any tier it must match the action. */
+  actionDigest?: string
+  /** Epoch ms after which this approval is stale and must be refused. */
+  expiresAt?: number
+  /** Optional single-use nonce (the caller tracks replay). */
+  nonce?: string
   note?: string
 }
 
@@ -99,6 +106,10 @@ export interface ApplyResult {
   attestation: Attestation
   /** Set when apply/verify failed and an auto-rollback ran. */
   rolledBack: boolean
+  /** Did the target's observed state ACTUALLY change from `before`? Determined by a
+   *  mandatory read-back — even on the error path, so a throw-after-mutation is never
+   *  reported as "no change". */
+  mutated: boolean
   verification: { passed: boolean | null; method: string } | null
   notes: string[]
   error?: string

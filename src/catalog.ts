@@ -1,4 +1,4 @@
-import type { Action, CatalogEntry } from './types.js'
+import type { Action, BlastClass, CatalogEntry } from './types.js'
 
 /** The known-safe action catalog — the ONLY things the hands can do. The first
  *  slice is DNS records: reversible, zero-blast to add, and the natural pair for
@@ -51,7 +51,7 @@ export function buildAction(kind: string, target: string, params: Record<string,
     target,
     params,
     summary: entry.describe(params, target),
-    blastClass: entry.blastClass,
+    blastClass: classifyBlast(kind, params, entry.blastClass),
     reversible: false,
   }
   const inv = entry.invert(base)
@@ -72,4 +72,27 @@ export function buildAction(kind: string, target: string, params: Record<string,
 
 function truncate(s: string, n: number): string {
   return s.length > n ? s.slice(0, n) + '…' : s
+}
+
+/**
+ * A DNS "add" is NOT uniformly trivial. Blast depends on the record TYPE and NAME:
+ *  - MX / NS → B2: mail routing and zone delegation affect reachability broadly.
+ *  - CAA → B1: it governs which CAs may issue certificates for the domain.
+ *  - A / AAAA / CNAME → B1: they change where a name resolves (reachability).
+ *  - apex TXT or _dmarc / *._domainkey / _mta-sts TXT → B1: these are SPF/DMARC/DKIM/
+ *    MTA-STS — a wrong value can silently break mail delivery.
+ *  - any other TXT → B0: genuinely low blast.
+ *  A delete is always at least B1 (removing a record can break something relying on it).
+ */
+function classifyBlast(kind: string, params: Record<string, string>, fallback: BlastClass): BlastClass {
+  if (kind === 'dns.record.add') {
+    const type = (params.type ?? '').toUpperCase()
+    const name = (params.name ?? '').toLowerCase()
+    if (type === 'MX' || type === 'NS') return 'B2'
+    if (type === 'CAA' || type === 'A' || type === 'AAAA' || type === 'CNAME') return 'B1'
+    if (type === 'TXT' && (name === '@' || name === '' || /(^|\.)_dmarc\b/.test(name) || /_domainkey\b/.test(name) || /(^|\.)_mta-sts\b/.test(name))) return 'B1'
+    return 'B0'
+  }
+  if (kind === 'dns.record.delete') return fallback === 'B0' ? 'B1' : fallback
+  return fallback
 }
